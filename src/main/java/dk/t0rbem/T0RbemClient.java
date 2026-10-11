@@ -66,6 +66,7 @@ public class T0RbemClient implements ClientModInitializer {
             }
             while (panicKey.wasPressed()) Miner.INSTANCE.disableAll();
             Miner.INSTANCE.keepFlight(mc);
+            Miner.INSTANCE.tickNoFall(mc);
             if (openGui) {
                 openGui = false;
                 mc.setScreen(new T0RbemScreen());
@@ -220,6 +221,7 @@ public class T0RbemClient implements ClientModInitializer {
         boolean area = false;
         int placeDelay = 2;
         boolean flight = false;
+        boolean noFall = false;
         int finderIndex = 0;
         static final String[] FINDER_TARGETS = {"diamond", "ancient_debris", "emerald", "gold", "iron", "coal", "redstone", "lapis", "copper"};
         BlockPos areaA, areaB;
@@ -324,6 +326,7 @@ public class T0RbemClient implements ClientModInitializer {
             area = false;
             MinecraftClient mc = MinecraftClient.getInstance();
             if (flight) setFlight(mc, false);
+            noFall = false;
             status = "All features disabled.";
         }
 
@@ -350,6 +353,25 @@ public class T0RbemClient implements ClientModInitializer {
             if (on) mc.player.getAbilities().flying = true;
             if (!allow) mc.player.getAbilities().flying = false;
             status = on ? "Flight ON (double-tap jump to toggle)" : "Flight OFF";
+        }
+
+        /** No fall damage: resets the fall distance every tick. Singleplayer only. */
+        void setNoFall(MinecraftClient mc, boolean on) {
+            if (on && (mc.player == null || !mc.isInSingleplayer())) {
+                noFall = false;
+                status = "No fall only works in singleplayer.";
+                return;
+            }
+            noFall = on;
+            status = on ? "No fall ON" : "No fall OFF";
+        }
+
+        void tickNoFall(MinecraftClient mc) {
+            if (!noFall || mc.player == null) return;
+            if (!mc.isInSingleplayer() || mc.getServer() == null) { noFall = false; return; }
+            mc.player.fallDistance = 0;
+            var sp = mc.getServer().getPlayerManager().getPlayer(mc.player.getUuid());
+            if (sp != null) mc.getServer().execute(() -> sp.fallDistance = 0);
         }
 
         /** Re-applies flight if the game reset the abilities (death, dimension change, etc). */
@@ -638,6 +660,10 @@ public class T0RbemClient implements ClientModInitializer {
                 m.setFlight(MinecraftClient.getInstance(), !m.flight);
                 b.setMessage(flightLabel());
             });
+            feature(Tab.SINGLEPLAYER, "no fall damage", noFallLabel(), b -> {
+                m.setNoFall(MinecraftClient.getInstance(), !m.noFall);
+                b.setMessage(noFallLabel());
+            });
             feature(Tab.SINGLEPLAYER, "block finder ore target", finderLabel(), b -> {
                 m.finderIndex = (m.finderIndex + 1) % Miner.FINDER_TARGETS.length;
                 b.setMessage(finderLabel());
@@ -689,6 +715,10 @@ public class T0RbemClient implements ClientModInitializer {
 
         private Text flightLabel() {
             return Text.literal("Flight: " + (Miner.INSTANCE.flight ? "ON" : "OFF") + " (singleplayer)");
+        }
+
+        private Text noFallLabel() {
+            return Text.literal("No fall: " + (Miner.INSTANCE.noFall ? "ON" : "OFF") + " (singleplayer)");
         }
 
         private Text finderLabel() {
