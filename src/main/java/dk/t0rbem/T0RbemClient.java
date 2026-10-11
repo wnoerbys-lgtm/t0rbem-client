@@ -12,9 +12,9 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.DrawContext;
 import net.minecraft.client.gui.screen.Screen;
 import net.minecraft.client.gui.widget.ButtonWidget;
+import net.minecraft.client.gui.widget.TextFieldWidget;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.client.option.KeyBinding;
-import net.minecraft.command.argument.EntityAnchorArgumentType;
 import net.minecraft.item.Item;
 import net.minecraft.item.Items;
 import net.minecraft.nbt.NbtCompound;
@@ -28,6 +28,7 @@ import net.minecraft.util.Identifier;
 import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.math.BlockPos;
 import net.minecraft.util.math.Direction;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.util.math.Vec3d;
 import org.lwjgl.glfw.GLFW;
 
@@ -42,14 +43,16 @@ import java.util.stream.Stream;
 /** T0Rbem client: hele moden i én fil. Right Shift eller /t0rbem åbner GUI'et. */
 public class T0RbemClient implements ClientModInitializer {
     private KeyBinding openKey;
+    private KeyBinding panicKey;
     private boolean openGui = false;
 
     @Override
     public void onInitializeClient() {
+        KeyBinding.Category category = KeyBinding.Category.create(Identifier.of("t0rbem_client", "main"));
         openKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
-            "key.t0rbem.open",
-            GLFW.GLFW_KEY_RIGHT_SHIFT,
-            KeyBinding.Category.create(Identifier.of("t0rbem_client", "main"))));
+            "key.t0rbem.open", GLFW.GLFW_KEY_RIGHT_SHIFT, category));
+        panicKey = KeyBindingHelper.registerKeyBinding(new KeyBinding(
+            "Disable all (T0Rbem)", GLFW.GLFW_KEY_END, category));
 
         ClientCommandRegistrationCallback.EVENT.register((dispatcher, registryAccess) ->
             dispatcher.register(ClientCommandManager.literal("t0rbem").executes(ctx -> {
@@ -61,6 +64,7 @@ public class T0RbemClient implements ClientModInitializer {
             while (openKey.wasPressed()) {
                 if (mc.currentScreen == null) openGui = true;
             }
+            while (panicKey.wasPressed()) Miner.INSTANCE.disableAll();
             if (openGui) {
                 openGui = false;
                 mc.setScreen(new T0RbemScreen());
@@ -200,7 +204,7 @@ public class T0RbemClient implements ClientModInitializer {
         }
     }
 
-    // ───────────────────────── Miner / Builder ─────────────────────────
+    // ───────────────────────── Miner / Builder / Area Miner ─────────────────────────
     enum Mode { MINE, BUILD }
 
     static class Miner {
@@ -212,7 +216,13 @@ public class T0RbemClient implements ClientModInitializer {
         BlockPos origin;
         Mode mode = Mode.MINE;
         boolean running = false;
-        String status = "Ingen schematic indlæst.";
+        boolean area = false;
+        int placeDelay = 2;
+        boolean flight = false;
+        int finderIndex = 0;
+        static final String[] FINDER_TARGETS = {"diamond", "ancient_debris", "emerald", "gold", "iron", "coal", "redstone", "lapis", "copper"};
+        BlockPos areaA, areaB;
+        String status = "No schematic loaded.";
 
         private List<Entry> targets = new ArrayList<>();
         private int index = 0;
@@ -241,19 +251,19 @@ public class T0RbemClient implements ClientModInitializer {
             try {
                 schematic = Schematic.load(folder().resolve(file));
                 loadedName = file;
-                status = "Indlæste " + schematic.blocks.size() + " blokke fra " + file;
+                status = "Loaded " + schematic.blocks.size() + " blocks from " + file;
                 rebuild();
             } catch (Exception e) {
                 schematic = null;
                 loadedName = null;
-                status = "Fejl: " + e.getMessage();
+                status = "Error: " + e.getMessage();
             }
         }
 
         void setOrigin(BlockPos p) {
             origin = p;
             rebuild();
-            status = "Origin: " + p.toShortString();
+            status = "Origin set: " + p.toShortString();
         }
 
         void toggleMode() {
@@ -262,11 +272,39 @@ public class T0RbemClient implements ClientModInitializer {
         }
 
         void start() {
-            if (schematic == null) { status = "Vælg og indlæs en schematic først."; return; }
-            if (origin == null) { status = "Sæt origin først."; return; }
+            if (schematic == null) { status = "Pick and load a schematic first."; return; }
+            if (origin == null) { status = "Set the origin first."; return; }
+            area = false;
             rebuild();
             running = true;
-            status = "Kører...";
+            status = "Running...";
+        }
+
+        void startArea(MinecraftClient mc) {
+            if (areaA == null || areaB == null) { status = "Set both corners first."; return; }
+            if (mc.world == null) return;
+            int x1 = Math.min(areaA.getX(), areaB.getX()), x2 = Math.max(areaA.getX(), areaB.getX());
+            int y1 = Math.min(areaA.getY(), areaB.getY()), y2 = Math.max(areaA.getY(), areaB.getY());
+            int z1 = Math.min(areaA.getZ(), areaB.getZ()), z2 = Math.max(areaA.getZ(), areaB.getZ());
+            long vol = (long) (x2 - x1 + 1) * (y2 - y1 + 1) * (z2 - z1 + 1);
+            if (vol > 300000) { status = "Area too large (max 300000 blocks)."; return; }
+
+            targets = new ArrayList<>();
+            for (int y = y1; y <= y2; y++)
+                for (int z = z1; z <= z2; z++)
+                    for (int x = x1; x <= x2; x++) {
+                        BlockPos p = new BlockPos(x, y, z);
+                        BlockState st = mc.world.getBlockState(p);
+                        if (!st.isAir() && st.getFluidState().isEmpty() && st.getHardness(mc.world, p) >= 0)
+                            targets.add(new Entry(p, ""));
+                    }
+            targets.sort(Comparator.<Entry>comparingInt(e -> -e.pos().getY())
+                .thenComparingInt(e -> e.pos().getZ())
+                .thenComparingInt(e -> (e.pos().getZ() & 1) == 0 ? e.pos().getX() : -e.pos().getX()));
+            index = 0;
+            area = true;
+            running = true;
+            status = "Area miner: " + targets.size() + " blocks";
         }
 
         void stop() {
@@ -279,19 +317,78 @@ public class T0RbemClient implements ClientModInitializer {
             if (mc.interactionManager != null) mc.interactionManager.cancelBlockBreaking();
         }
 
+        /** Kill switch: stops everything at once and releases all keys. */
+        void disableAll() {
+            stop();
+            area = false;
+            MinecraftClient mc = MinecraftClient.getInstance();
+            if (flight) setFlight(mc, false);
+            status = "All features disabled.";
+        }
+
+        /** Flight via the integrated server's abilities. Only works in singleplayer. */
+        void setFlight(MinecraftClient mc, boolean on) {
+            if (mc.player == null || !mc.isInSingleplayer() || mc.getServer() == null) {
+                flight = false;
+                status = "Flight only works in singleplayer.";
+                return;
+            }
+            flight = on;
+            boolean keep = mc.player.isCreative() || mc.player.isSpectator();
+            boolean allow = on || keep;
+            var sp = mc.getServer().getPlayerManager().getPlayer(mc.player.getUuid());
+            mc.getServer().execute(() -> {
+                if (sp != null) {
+                    sp.getAbilities().allowFlying = allow;
+                    if (!allow) sp.getAbilities().flying = false;
+                    sp.sendAbilitiesUpdate();
+                }
+            });
+            mc.player.getAbilities().allowFlying = allow;
+            if (!allow) mc.player.getAbilities().flying = false;
+            status = on ? "Flight ON (double-tap jump)" : "Flight OFF";
+        }
+
+        /** Lists the nearest matching ore blocks in loaded terrain. Singleplayer only. */
+        void scanBlocks(MinecraftClient mc) {
+            if (mc.player == null || mc.world == null || !mc.isInSingleplayer()) {
+                status = "Block finder only works in singleplayer.";
+                return;
+            }
+            String want = FINDER_TARGETS[finderIndex];
+            BlockPos c = mc.player.getBlockPos();
+            int r = 24;
+            List<BlockPos> hits = new ArrayList<>();
+            for (int x = -r; x <= r; x++)
+                for (int y = -r; y <= r; y++)
+                    for (int z = -r; z <= r; z++) {
+                        BlockPos p = c.add(x, y, z);
+                        String id = Registries.BLOCK.getId(mc.world.getBlockState(p).getBlock()).getPath();
+                        boolean match = want.equals("ancient_debris") ? id.equals("ancient_debris")
+                            : (id.endsWith("_ore") && id.contains(want));
+                        if (match) hits.add(p);
+                    }
+            hits.sort(Comparator.comparingDouble(p -> p.getSquaredDistance(c)));
+            status = "Found " + hits.size() + " " + want + " within " + r + " blocks";
+            msg(status);
+            for (int i = 0; i < Math.min(5, hits.size()); i++) {
+                BlockPos h = hits.get(i);
+                msg(h.getX() + " " + h.getY() + " " + h.getZ() + "  (" + (int) Math.sqrt(h.getSquaredDistance(c)) + " blocks away)");
+            }
+        }
+
         int remaining() { return Math.max(0, targets.size() - index); }
 
         private void rebuild() {
+            if (area && running) return;
             if (schematic == null || origin == null) return;
             targets = new ArrayList<>();
             for (Entry e : schematic.blocks) targets.add(new Entry(origin.add(e.pos()), e.block()));
             if (mode == Mode.MINE) {
-                // øverste lag først, slangemønster
                 targets.sort(Comparator.<Entry>comparingInt(e -> -e.pos().getY())
                     .thenComparingInt(e -> e.pos().getZ())
                     .thenComparingInt(e -> (e.pos().getZ() & 1) == 0 ? e.pos().getX() : -e.pos().getX()));
             } else {
-                // nederste lag først så der er noget at placere op mod
                 targets.sort(Comparator.<Entry>comparingInt(e -> e.pos().getY())
                     .thenComparingInt(e -> e.pos().getZ())
                     .thenComparingInt(e -> (e.pos().getZ() & 1) == 0 ? e.pos().getX() : -e.pos().getX()));
@@ -304,12 +401,35 @@ public class T0RbemClient implements ClientModInitializer {
             if (!running) return;
             if (mc.player == null || mc.world == null || mc.interactionManager == null) { stop(); return; }
             if (cooldown > 0) cooldown--;
-            if (mode == Mode.MINE) tickMine(mc); else tickBuild(mc);
+            if (area || mode == Mode.MINE) tickMine(mc); else tickBuild(mc);
+        }
+
+        /** Turns the camera smoothly toward a point. Returns the remaining angle error in degrees. */
+        private float smoothLook(ClientPlayerEntity pl, Vec3d target) {
+            Vec3d eye = pl.getEyePos();
+            double dx = target.x - eye.x, dy = target.y - eye.y, dz = target.z - eye.z;
+            double horiz = Math.sqrt(dx * dx + dz * dz);
+            float wantYaw = (float) (Math.toDegrees(Math.atan2(dz, dx)) - 90.0);
+            float wantPitch = (float) -Math.toDegrees(Math.atan2(dy, horiz));
+            float dYaw = MathHelper.wrapDegrees(wantYaw - pl.getYaw());
+            float dPitch = wantPitch - pl.getPitch();
+            float stepYaw = easeStep(dYaw);
+            float stepPitch = easeStep(dPitch);
+            pl.setYaw(pl.getYaw() + stepYaw);
+            pl.setPitch(MathHelper.clamp(pl.getPitch() + stepPitch, -90f, 90f));
+            return Math.max(Math.abs(dYaw - stepYaw), Math.abs(dPitch - stepPitch));
+        }
+
+        /** Moves a fraction of the remaining angle each tick, capped, so turns look smooth. */
+        private static float easeStep(float d) {
+            float a = Math.abs(d);
+            float s = Math.min(Math.max(a * 0.25f, Math.min(a, 1.5f)), 10f);
+            return Math.copySign(s, d);
         }
 
         private void walkTo(MinecraftClient mc, ClientPlayerEntity pl, Vec3d center) {
-            pl.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, center);
-            mc.options.forwardKey.setPressed(true);
+            float err = smoothLook(pl, center);
+            mc.options.forwardKey.setPressed(err < 50f);
             mc.options.jumpKey.setPressed(pl.horizontalCollision);
         }
 
@@ -320,20 +440,24 @@ public class T0RbemClient implements ClientModInitializer {
 
         private void tickMine(MinecraftClient mc) {
             while (index < targets.size() && mc.world.getBlockState(targets.get(index).pos()).isAir()) index++;
-            if (index >= targets.size()) { stop(); status = "Færdig!"; msg("Færdig!"); return; }
+            if (index >= targets.size()) { stop(); status = "Done!"; msg("Done!"); return; }
 
             BlockPos target = targets.get(index).pos();
             if (mc.world.getBlockState(target).getHardness(mc.world, target) < 0) { index++; return; }
 
             ClientPlayerEntity pl = mc.player;
             Vec3d center = Vec3d.ofCenter(target);
-            status = "Mining: " + remaining() + " tilbage";
+            status = (area ? "Area miner: " : "Mining: ") + remaining() + " left";
 
             if (pl.getEyePos().distanceTo(center) <= REACH) {
                 holdStill(mc);
-                pl.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, center);
-                mc.interactionManager.updateBlockBreakingProgress(target, Direction.UP);
-                pl.swingHand(Hand.MAIN_HAND);
+                float err = smoothLook(pl, center);
+                if (err < 20f) {
+                    mc.interactionManager.updateBlockBreakingProgress(target, Direction.UP);
+                    pl.swingHand(Hand.MAIN_HAND);
+                } else {
+                    mc.interactionManager.cancelBlockBreaking();
+                }
             } else {
                 walkTo(mc, pl, center);
             }
@@ -345,7 +469,7 @@ public class T0RbemClient implements ClientModInitializer {
                 if (st.isAir() || st.isReplaceable()) break;
                 index++;
             }
-            if (index >= targets.size()) { stop(); status = "Færdig!"; msg("Færdig!"); return; }
+            if (index >= targets.size()) { stop(); status = "Done!"; msg("Done!"); return; }
 
             if (attemptsIndex != index) { attemptsIndex = index; attempts = 0; }
             Entry e = targets.get(index);
@@ -362,18 +486,18 @@ public class T0RbemClient implements ClientModInitializer {
             }
             if (slot < 0) {
                 holdStill(mc);
-                status = "Mangler " + e.block() + " i hotbar";
+                status = "Missing " + e.block() + " in hotbar";
                 return;
             }
 
             Vec3d center = Vec3d.ofCenter(target);
-            status = "Bygger: " + remaining() + " tilbage";
+            status = "Building: " + remaining() + " left";
 
             if (pl.getEyePos().distanceTo(center) > REACH) { walkTo(mc, pl, center); return; }
             holdStill(mc);
-            if (cooldown > 0) return;
+            float err = smoothLook(pl, center);
+            if (err > 20f || cooldown > 0) return;
 
-            // find en nabo-blok at placere op mod
             Direction side = null;
             for (Direction d : Direction.values()) {
                 if (!mc.world.getBlockState(target.offset(d)).isAir()
@@ -385,10 +509,9 @@ public class T0RbemClient implements ClientModInitializer {
             Direction face = side.getOpposite();
             Vec3d hitPos = Vec3d.ofCenter(neighbor).add(Vec3d.of(face.getVector()).multiply(0.5));
             pl.getInventory().setSelectedSlot(slot);
-            pl.lookAt(EntityAnchorArgumentType.EntityAnchor.EYES, center);
             mc.interactionManager.interactBlock(pl, Hand.MAIN_HAND, new BlockHitResult(hitPos, face, neighbor, false));
             pl.swingHand(Hand.MAIN_HAND);
-            cooldown = 2;
+            cooldown = placeDelay;
         }
 
         private void msg(String s) {
@@ -397,69 +520,192 @@ public class T0RbemClient implements ClientModInitializer {
         }
     }
 
-    // ───────────────────────── GUI ─────────────────────────
+    // ───────────────────────── GUI (sidebar + search + tabs) ─────────────────────────
     static class T0RbemScreen extends Screen {
+        enum Tab {
+            BUILDER("Schematic Builder"), AREA("Area Miner"), SINGLEPLAYER("Singleplayer Tools"), SETTINGS("Settings");
+            final String label;
+            Tab(String label) { this.label = label; }
+        }
+
+        private static class Feature {
+            final String name; final Tab tab; final ButtonWidget widget;
+            Feature(String name, Tab tab, ButtonWidget widget) { this.name = name; this.tab = tab; this.widget = widget; }
+        }
+
+        private static Tab currentTab = Tab.BUILDER;
+        private static String savedQuery = "";
+
+        private static final int PW = 390, PH = 250;
+        private int left, top, cx0;
+        private String query = "";
         private List<String> files;
         private int fileIdx = 0;
+        private TextFieldWidget search;
+        private final List<Feature> features = new ArrayList<>();
+        private final List<ButtonWidget> tabButtons = new ArrayList<>();
 
-        T0RbemScreen() { super(Text.literal("T0Rbem client")); }
+        T0RbemScreen() { super(Text.literal("T0Rbem Client")); }
+
+        private ButtonWidget feature(Tab tab, String name, Text label, ButtonWidget.PressAction action) {
+            ButtonWidget b = ButtonWidget.builder(label, action).dimensions(0, 0, 240, 20).build();
+            addDrawableChild(b);
+            features.add(new Feature(name, tab, b));
+            return b;
+        }
 
         @Override
         protected void init() {
+            features.clear();
+            tabButtons.clear();
             files = Miner.listFiles();
             Miner m = Miner.INSTANCE;
             if (m.loadedName != null && files.contains(m.loadedName)) fileIdx = files.indexOf(m.loadedName);
 
-            int cx = width / 2, y = height / 2 - 70, w = 200, h = 20, gap = 24;
+            left = (width - PW) / 2;
+            top = (height - PH) / 2;
+            cx0 = left + 136;
+            query = savedQuery;
 
-            addDrawableChild(ButtonWidget.builder(fileLabel(), b -> {
+            search = new TextFieldWidget(textRenderer, cx0, top + 28, 240, 18, Text.literal("Search"));
+            search.setPlaceholder(Text.literal("Search features..."));
+            search.setText(query);
+            search.setChangedListener(s -> { query = s.toLowerCase().trim(); savedQuery = s; layout(); });
+            addDrawableChild(search);
+            query = query.toLowerCase().trim();
+
+            // Sidebar tabs
+            Tab[] tabs = Tab.values();
+            for (int i = 0; i < tabs.length; i++) {
+                final Tab t = tabs[i];
+                ButtonWidget tb = ButtonWidget.builder(Text.literal(t.label), b -> {
+                    currentTab = t;
+                    search.setText("");
+                    layout();
+                }).dimensions(left + 8, top + 34 + i * 24, 112, 20).build();
+                addDrawableChild(tb);
+                tabButtons.add(tb);
+            }
+
+            // ----- Schematic Builder -----
+            feature(Tab.BUILDER, "file select schematic", fileLabel(), b -> {
                 if (files.isEmpty()) return;
                 fileIdx = (fileIdx + 1) % files.size();
                 b.setMessage(fileLabel());
-            }).dimensions(cx - w / 2, y, w, h).build());
-
-            addDrawableChild(ButtonWidget.builder(Text.literal("Indlæs schematic"), b -> {
+            });
+            feature(Tab.BUILDER, "load schematic", Text.literal("Load schematic"), b -> {
                 if (!files.isEmpty()) m.load(files.get(fileIdx));
-                else m.status = "Ingen schematic i mappen schematics/";
-            }).dimensions(cx - w / 2, y + gap, w, h).build());
-
-            addDrawableChild(ButtonWidget.builder(modeLabel(), b -> {
+                else m.status = "No schematic found in schematics/";
+            });
+            feature(Tab.BUILDER, "mode mine build", modeLabel(), b -> {
                 m.toggleMode();
                 b.setMessage(modeLabel());
-            }).dimensions(cx - w / 2, y + gap * 2, w, h).build());
-
-            addDrawableChild(ButtonWidget.builder(Text.literal("Sæt origin til min position"), b -> {
+            });
+            feature(Tab.BUILDER, "set origin position", Text.literal("Set origin to my position"), b -> {
                 if (client != null && client.player != null) m.setOrigin(client.player.getBlockPos());
-            }).dimensions(cx - w / 2, y + gap * 3, w, h).build());
+            });
+            feature(Tab.BUILDER, "start builder schematic", Text.literal("Start schematic"), b -> m.start());
+            feature(Tab.BUILDER, "stop builder schematic", Text.literal("Stop"), b -> m.stop());
 
-            addDrawableChild(ButtonWidget.builder(Text.literal("Start"), b -> m.start())
-                .dimensions(cx - w / 2, y + gap * 4, w / 2 - 2, h).build());
-            addDrawableChild(ButtonWidget.builder(Text.literal("Stop"), b -> m.stop())
-                .dimensions(cx + 2, y + gap * 4, w / 2 - 2, h).build());
+            // ----- Area Miner -----
+            feature(Tab.AREA, "area miner corner 1 pos1", Text.literal("Set corner 1 to my position"), b -> {
+                if (client != null && client.player != null) {
+                    m.areaA = client.player.getBlockPos();
+                    m.status = "Corner 1: " + m.areaA.toShortString();
+                }
+            });
+            feature(Tab.AREA, "area miner corner 2 pos2", Text.literal("Set corner 2 to my position"), b -> {
+                if (client != null && client.player != null) {
+                    m.areaB = client.player.getBlockPos();
+                    m.status = "Corner 2: " + m.areaB.toShortString();
+                }
+            });
+            feature(Tab.AREA, "area miner start", Text.literal("Start area miner"), b -> m.startArea(MinecraftClient.getInstance()));
+            feature(Tab.AREA, "area miner stop", Text.literal("Stop"), b -> m.stop());
 
-            addDrawableChild(ButtonWidget.builder(Text.literal("Luk"), b -> close())
-                .dimensions(cx - w / 2, y + gap * 5 + 6, w, h).build());
+            // ----- Singleplayer Tools -----
+            feature(Tab.SINGLEPLAYER, "flight fly", flightLabel(), b -> {
+                m.setFlight(MinecraftClient.getInstance(), !m.flight);
+                b.setMessage(flightLabel());
+            });
+            feature(Tab.SINGLEPLAYER, "block finder ore target", finderLabel(), b -> {
+                m.finderIndex = (m.finderIndex + 1) % Miner.FINDER_TARGETS.length;
+                b.setMessage(finderLabel());
+            });
+            feature(Tab.SINGLEPLAYER, "block finder scan ore", Text.literal("Scan nearby blocks"),
+                b -> m.scanBlocks(MinecraftClient.getInstance()));
+
+            // ----- Settings -----
+            feature(Tab.SETTINGS, "place delay speed", delayLabel(), b -> {
+                m.placeDelay = m.placeDelay >= 6 ? 1 : m.placeDelay + 1;
+                b.setMessage(delayLabel());
+            });
+            ButtonWidget key = feature(Tab.SETTINGS, "keybind menu key right shift", Text.literal("Menu key: Right Shift (change in Controls)"), b -> {});
+            key.active = false;
+
+            // Kill switch: always visible on every tab
+            addDrawableChild(ButtonWidget.builder(Text.literal("DISABLE ALL"), b -> m.disableAll())
+                .dimensions(cx0, top + PH - 42, 240, 20).build());
+
+            layout();
+        }
+
+        private void layout() {
+            int y = top + 54;
+            int maxY = top + PH - 48;
+            for (Feature f : features) {
+                boolean match = query.isEmpty() ? f.tab == currentTab : (f.name.contains(query) || f.tab.label.toLowerCase().contains(query));
+                boolean show = match && y + 20 <= maxY;
+                f.widget.visible = show;
+                if (show) {
+                    f.widget.setPosition(cx0, y);
+                    y += 24;
+                }
+            }
+            Tab[] tabs = Tab.values();
+            for (int i = 0; i < tabButtons.size(); i++) {
+                tabButtons.get(i).setMessage(Text.literal((tabs[i] == currentTab && query.isEmpty() ? "> " : "") + tabs[i].label));
+            }
         }
 
         private Text fileLabel() {
-            if (files.isEmpty()) return Text.literal("Ingen filer i schematics/");
-            return Text.literal("Fil: " + files.get(fileIdx));
+            if (files.isEmpty()) return Text.literal("No files in schematics/");
+            return Text.literal("File: " + files.get(fileIdx));
         }
 
         private Text modeLabel() {
-            return Text.literal("Tilstand: " + (Miner.INSTANCE.mode == Mode.MINE ? "Mine (fjern blokke)" : "Build (placer fra hotbar)"));
+            return Text.literal("Mode: " + (Miner.INSTANCE.mode == Mode.MINE ? "Mine (remove blocks)" : "Build (place from hotbar)"));
+        }
+
+        private Text flightLabel() {
+            return Text.literal("Flight: " + (Miner.INSTANCE.flight ? "ON" : "OFF") + " (singleplayer)");
+        }
+
+        private Text finderLabel() {
+            return Text.literal("Block finder: " + Miner.FINDER_TARGETS[Miner.INSTANCE.finderIndex]);
+        }
+
+        private Text delayLabel() {
+            return Text.literal("Place delay: " + Miner.INSTANCE.placeDelay + " ticks");
+        }
+
+        @Override
+        public void renderBackground(DrawContext ctx, int mouseX, int mouseY, float delta) {
+            super.renderBackground(ctx, mouseX, mouseY, delta);
+            ctx.fill(left, top, left + PW, top + PH, 0xF0121218);          // panel
+            ctx.fill(left, top, left + 128, top + PH, 0xFF1B1B26);         // sidebar
+            ctx.fill(left, top, left + PW, top + 2, 0xFF8A5CFF);           // accent line
+            ctx.fill(left + 128, top + 2, left + 129, top + PH, 0xFF2A2A3A);
         }
 
         @Override
         public void render(DrawContext ctx, int mouseX, int mouseY, float delta) {
             super.render(ctx, mouseX, mouseY, delta);
             Miner m = Miner.INSTANCE;
-            int cx = width / 2;
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal("T0Rbem client"), cx, height / 2 - 100, 0xFFFFFF);
-            ctx.drawCenteredTextWithShadow(textRenderer, Text.literal(m.status), cx, height / 2 + 90, 0xAAAAAA);
-            ctx.drawCenteredTextWithShadow(textRenderer,
-                Text.literal(m.running ? "Status: KØRER" : "Status: stoppet"), cx, height / 2 + 102,
-                m.running ? 0x55FF55 : 0xFF5555);
+            ctx.drawTextWithShadow(textRenderer, Text.literal("T0Rbem Client"), left + 10, top + 12, 0xFFFFFFFF);
+            ctx.drawTextWithShadow(textRenderer, Text.literal(m.running ? "RUNNING" : "Idle"), cx0, top + 10,
+                m.running ? 0xFF55FF55 : 0xFFAAAAAA);
+            ctx.drawTextWithShadow(textRenderer, Text.literal(m.status), cx0, top + PH - 16, 0xFFBBBBBB);
         }
 
         @Override
