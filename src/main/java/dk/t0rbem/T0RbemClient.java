@@ -65,6 +65,7 @@ public class T0RbemClient implements ClientModInitializer {
                 if (mc.currentScreen == null) openGui = true;
             }
             while (panicKey.wasPressed()) Miner.INSTANCE.disableAll();
+            Miner.INSTANCE.keepFlight(mc);
             if (openGui) {
                 openGui = false;
                 mc.setScreen(new T0RbemScreen());
@@ -340,13 +341,22 @@ public class T0RbemClient implements ClientModInitializer {
             mc.getServer().execute(() -> {
                 if (sp != null) {
                     sp.getAbilities().allowFlying = allow;
+                    if (on) sp.getAbilities().flying = true;
                     if (!allow) sp.getAbilities().flying = false;
                     sp.sendAbilitiesUpdate();
                 }
             });
             mc.player.getAbilities().allowFlying = allow;
+            if (on) mc.player.getAbilities().flying = true;
             if (!allow) mc.player.getAbilities().flying = false;
-            status = on ? "Flight ON (double-tap jump)" : "Flight OFF";
+            status = on ? "Flight ON (double-tap jump to toggle)" : "Flight OFF";
+        }
+
+        /** Re-applies flight if the game reset the abilities (death, dimension change, etc). */
+        void keepFlight(MinecraftClient mc) {
+            if (!flight || mc.player == null) return;
+            if (!mc.isInSingleplayer()) { flight = false; return; }
+            if (!mc.player.getAbilities().allowFlying) setFlight(mc, true);
         }
 
         /** Lists the nearest matching ore blocks in loaded terrain. Singleplayer only. */
