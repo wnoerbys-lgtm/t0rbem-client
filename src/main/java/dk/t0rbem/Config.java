@@ -26,6 +26,8 @@ public class Config {
         try (Reader r = Files.newBufferedReader(f)) {
             JsonObject root = JsonParser.parseReader(r).getAsJsonObject();
             if (root.has("hudVisible")) T0rbemClient.hudVisible = root.get("hudVisible").getAsBoolean();
+            if (root.has("theme")) Theme.index = Math.max(0, Math.min(Theme.NAMES.length - 1, root.get("theme").getAsInt()));
+            if (root.has("particles")) Theme.particles = root.get("particles").getAsBoolean();
             if (root.has("modules")) {
                 JsonObject mods = root.getAsJsonObject("modules");
                 for (Module m : ModuleManager.all()) {
@@ -41,6 +43,8 @@ public class Config {
         try {
             JsonObject root = new JsonObject();
             root.addProperty("hudVisible", T0rbemClient.hudVisible);
+            root.addProperty("theme", Theme.index);
+            root.addProperty("particles", Theme.particles);
             JsonObject mods = new JsonObject();
             for (Module m : ModuleManager.all()) mods.add(m.name, m.save());
             root.add("modules", mods);
