@@ -1,14 +1,17 @@
 {
   "schemaVersion": 1,
-  "id": "t0rbem_client",
-  "version": "1.0.0",
-  "name": "T0Rbem client",
-  "description": "Auto-miner for .litematic schematics med GUI. Kun til singleplayer / egen server.",
-  "authors": ["T0Rbem"],
+  "id": "t0rbem",
+  "version": "${version}",
+  "name": "t0rbem client",
+  "description": "Utility-klient med ClickGUI, flytbar HUD, indstillinger og gemt config.",
+  "authors": ["t0rbem"],
+  "license": "MIT",
   "environment": "client",
-  "entrypoints": { "client": ["dk.t0rbem.T0RbemClient"] },
+  "entrypoints": {
+    "client": ["dk.t0rbem.T0rbemClient"]
+  },
   "depends": {
-    "fabricloader": ">=0.17.0",
+    "fabricloader": ">=0.16.0",
     "minecraft": "1.21.11",
     "java": ">=21",
     "fabric-api": "*"
